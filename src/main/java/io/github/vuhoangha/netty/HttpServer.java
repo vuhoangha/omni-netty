@@ -18,6 +18,7 @@ import net.openhft.affinity.AffinityThreadFactory;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadFactory;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -29,14 +30,14 @@ public class HttpServer {
     private final HttpRequestHandler httpRequestHandler;
 
 
-    public HttpServer(int port, ExecutorService vExec, TriConsumer<String, String, HttpData> authHandler, Consumer<HttpData> httpDataConsumer, Supplier<HttpData> httpDataSupplier, ObjectMapper objectMapper) throws Exception {
+    public HttpServer(int port, ExecutorService vExec, BiConsumer<String, HttpData> sessionTokenHandler, BiConsumer<String, HttpData> apiKeyHandler, Consumer<HttpData> httpDataConsumer, Supplier<HttpData> httpDataSupplier, ObjectMapper objectMapper) throws Exception {
         this.port = port;
-        httpRequestHandler = new HttpRequestHandler(vExec, authHandler, httpDataConsumer, httpDataSupplier, objectMapper);
+        httpRequestHandler = new HttpRequestHandler(vExec, sessionTokenHandler, apiKeyHandler, httpDataConsumer, httpDataSupplier, objectMapper);
     }
 
 
-    public void addRoute(String path, HttpMethod method, boolean requiresAuth, IHandler handler, Consumer<Object> bodyConsumer, Supplier<Object> bodySupplier) {
-        httpRequestHandler.addRoute(path, method, requiresAuth, handler, bodyConsumer, bodySupplier);
+    public void addRoute(String path, HttpMethod method, boolean requireSessionToken, boolean requireApiKey, IHandler handler, Consumer<Object> bodyConsumer, Supplier<Object> bodySupplier) {
+        httpRequestHandler.addRoute(path, method, requireSessionToken, requireApiKey, handler, bodyConsumer, bodySupplier);
     }
 
 

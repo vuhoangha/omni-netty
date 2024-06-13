@@ -16,6 +16,8 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
+import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -29,8 +31,11 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     // chứa danh sách các api đã đăng ký
     private final Map<String, Map<HttpMethod, Route>> routes = new HashMap<>();
 
-    // dùng để xác thực <session_token, api_key>
-    private final TriConsumer<String, String, HttpData> authHandler;
+    // dùng để xác thực session_token
+    private final BiConsumer<String, HttpData> sessionTokenHandler;
+
+    // dùng để xác thực api_key
+    private final BiConsumer<String, HttpData> apiKeyHandler;
 
     // dùng để tạo virtual thread
     private final ExecutorService vExec;
@@ -46,9 +51,11 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
     private final ByteBufAllocator allocator = PooledByteBufAllocator.DEFAULT;
 
 
-    public HttpRequestHandler(ExecutorService vExec, TriConsumer<String, String, HttpData> authHandler, Consumer<HttpData> httpDataConsumer, Supplier<HttpData> httpDataSupplier, ObjectMapper objectMapper) {
+    public HttpRequestHandler(ExecutorService vExec, BiConsumer<String, HttpData> sessionTokenHandler, BiConsumer<String, HttpData> apiKeyHandler,
+                              Consumer<HttpData> httpDataConsumer, Supplier<HttpData> httpDataSupplier, ObjectMapper objectMapper) {
         this.vExec = vExec;
-        this.authHandler = authHandler;
+        this.sessionTokenHandler = sessionTokenHandler;
+        this.apiKeyHandler = apiKeyHandler;
         this.httpDataConsumer = httpDataConsumer;
         this.httpDataSupplier = httpDataSupplier;
         this.objectMapper = objectMapper;
@@ -56,8 +63,8 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
 
     // đăng ký 1 api
-    public void addRoute(String path, HttpMethod method, boolean requiresAuth, IHandler handler, Consumer<Object> bodyConsumer, Supplier<Object> bodySupplier) {
-        routes.computeIfAbsent(path, k -> new HashMap<>()).put(method, new Route(requiresAuth, handler, bodyConsumer, bodySupplier));
+    public void addRoute(String path, HttpMethod method, boolean requireSessionToken, boolean requireApiKey, IHandler handler, Consumer<Object> bodyConsumer, Supplier<Object> bodySupplier) {
+        routes.computeIfAbsent(path, k -> new HashMap<>()).put(method, new Route(requireSessionToken, requireApiKey, handler, bodyConsumer, bodySupplier));
     }
 
 
@@ -88,10 +95,17 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
                 route = routes.get(path).get(method);
 
                 // authen
-                if (route.requiresAuth) {
+                if (route.requireSessionToken) {
                     String sessionToken = request.headers().get("session-token");
+                    sessionTokenHandler.accept(sessionToken, httpData);
+                    if (!httpData.getAuthData().isAuth) {
+                        sendError(httpData, route, ctx, HttpResponseStatus.UNAUTHORIZED);
+                        return;
+                    }
+                }
+                if (route.requireApiKey) {
                     String apiKey = request.headers().get("api-key");
-                    authHandler.accept(sessionToken, apiKey, httpData);
+                    apiKeyHandler.accept(apiKey, httpData);
                     if (!httpData.getAuthData().isAuth) {
                         sendError(httpData, route, ctx, HttpResponseStatus.UNAUTHORIZED);
                         return;
@@ -236,18 +250,22 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         // dùng để xử lý request
         private final IHandler handler;
 
-        // có phải xác thực token/api-key không
-        private final boolean requiresAuth;
+        // có phải xác thực session token không
+        private final boolean requireSessionToken;
+
+        // có phải xác thực api-key không
+        private final boolean requireApiKey;
 
         private final Consumer<Object> bodyConsumer;
 
         private final Supplier<Object> bodySupplier;
 
-        Route(boolean requiresAuth, IHandler handler, Consumer<Object> bodyConsumer, Supplier<Object> bodySupplier) {
+        Route(boolean requireSessionToken, boolean requireApiKey, IHandler handler, Consumer<Object> bodyConsumer, Supplier<Object> bodySupplier) {
             this.handler = handler;
             this.bodyConsumer = bodyConsumer;
             this.bodySupplier = bodySupplier;
-            this.requiresAuth = requiresAuth;
+            this.requireSessionToken = requireSessionToken;
+            this.requireApiKey = requireApiKey;
         }
     }
 }
