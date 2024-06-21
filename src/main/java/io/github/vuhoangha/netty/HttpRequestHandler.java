@@ -17,7 +17,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -70,6 +69,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
+
         // Tạo hoặc lấy ByteBuf từ pool
         ByteBuf content = allocator.buffer(request.content().readableBytes());
         content.writeBytes(request.content());
@@ -88,7 +88,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
                 // check api có tồn tại không
                 if (!routes.containsKey(path) || !routes.get(path).containsKey(method)) {
-                    sendError(httpData, route, ctx, HttpResponseStatus.NOT_FOUND);
+                    sendResponse(httpData, route, ctx, null, HttpResponseStatus.NOT_FOUND);
                     return;
                 }
 
@@ -99,7 +99,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
                     String sessionToken = request.headers().get("session-token");
                     sessionTokenHandler.accept(sessionToken, httpData);
                     if (!httpData.getAuthData().isAuth) {
-                        sendError(httpData, route, ctx, HttpResponseStatus.UNAUTHORIZED);
+                        sendResponse(httpData, route, ctx, null, HttpResponseStatus.UNAUTHORIZED);
                         return;
                     }
                 }
@@ -107,7 +107,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
                     String apiKey = request.headers().get("api-key");
                     apiKeyHandler.accept(apiKey, httpData);
                     if (!httpData.getAuthData().isAuth) {
-                        sendError(httpData, route, ctx, HttpResponseStatus.UNAUTHORIZED);
+                        sendResponse(httpData, route, ctx, null, HttpResponseStatus.UNAUTHORIZED);
                         return;
                     }
                 }
@@ -119,30 +119,45 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
                 // phản hồi
                 byte[] resByte = route.handler.process(httpData);
-                sendResponse(httpData, route, ctx, resByte);
+                sendResponse(httpData, route, ctx, resByte, HttpResponseStatus.OK);
 
             } catch (NettyCustomException e) {
-                // TODO tìm cách xử lý exception đoạn này
-                sendError(httpData, route, ctx, HttpResponseStatus.BAD_REQUEST);
+
+                byte[] jsonBytes = null;
+                try {
+                    jsonBytes = objectMapper.writeValueAsBytes(new ErrorResponse(e.getErrorCode().getCode()));
+                } catch (Exception ex) {
+                    log.error("HttpRequestHandler parse error_msg error", e);
+                }
+
                 log.error("HttpRequestHandler error", e);
+                sendResponse(httpData, route, ctx, jsonBytes, e.getErrorCode().getHttpStatus());
+
             } catch (Exception e) {
+
                 log.error("HttpRequestHandler error", e);
-                sendError(httpData, route, ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR);
+                sendResponse(httpData, route, ctx, null, HttpResponseStatus.INTERNAL_SERVER_ERROR);
+
             } finally {
+
                 // Giải phóng ByteBuf đã sao chép
                 content.release();
+
             }
         });
     }
 
 
-    private void sendResponse(HttpData httpData, Route route, ChannelHandlerContext ctx, byte[] jsonBytes) {
+    private void sendResponse(HttpData httpData, Route route, ChannelHandlerContext ctx, byte[] jsonBytes, HttpResponseStatus status) {
         //  trả data lại cho pool và clear
         returnToPoolAndClear(httpData, route);
 
         // ko phản hồi body gì
         if (jsonBytes == null) {
-            responseOnlyStatus(ctx, HttpResponseStatus.OK);
+            // TODO xem xét tái sử dụng đối tượng "DefaultFullHttpResponse" cho mỗi lỗi khác nhau
+            DefaultFullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, status);
+            response.headers().set(CONTENT_LENGTH, 0);
+            ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
             return;
         }
 
@@ -154,21 +169,11 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         content.addComponent(true, jsonBuf);
 
         // TODO xem tái sử dụng
-        FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, content);
+        FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status, content);
         response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
 
         // ghi và giải phóng tài nguyên --> Đóng kết nối
         ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
-    }
-
-
-    // TODO đoạn này tìm cách cache, json type
-    private void sendError(HttpData httpData, Route route, ChannelHandlerContext ctx, HttpResponseStatus status) {
-        //  trả data lại cho pool và clear
-        returnToPoolAndClear(httpData, route);
-
-        // gửi về cho client
-        responseOnlyStatus(ctx, status);
     }
 
 
@@ -184,14 +189,6 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
         // trả httpData lại pool
         httpData.clear();
         httpDataConsumer.accept(httpData);
-    }
-
-
-    // TODO xem xét tái sử dụng đối tượng "DefaultFullHttpResponse" cho mỗi lỗi khác nhau
-    private void responseOnlyStatus(ChannelHandlerContext ctx, HttpResponseStatus status) {
-        DefaultFullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, status);
-        response.headers().set(CONTENT_LENGTH, 0);
-        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
     }
 
 
@@ -225,7 +222,9 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
     // TODO nhớ thử xem virtual thread có hoạt động chung cho bên auth và process ko nhé hay lại khác nhau
     private void parseBody(ByteBuf content, HttpData httpData, Supplier<Object> objectSupplier) {
+
         try {
+
             // ko có body bỏ qua
             if (!content.isReadable()) return;
 
@@ -237,9 +236,12 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequ
             Object object = objectSupplier.get();
             objectMapper.readerForUpdating(object).readValue(parser);
             httpData.setBody(object);
+
         } catch (Exception ex) {
+
             log.error("HttpProcessHandler.parseBody error", ex);
-            throw new NettyCustomException(ex);
+            throw new NettyCustomException(ErrorCode.INTERNAL_SERVER_ERROR, "parse body error", ex);
+
         }
     }
 
