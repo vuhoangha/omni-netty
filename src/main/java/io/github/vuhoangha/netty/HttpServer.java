@@ -13,6 +13,9 @@ import io.netty.handler.codec.http.HttpContentCompressor;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
+import io.netty.handler.codec.http.cors.CorsConfig;
+import io.netty.handler.codec.http.cors.CorsConfigBuilder;
+import io.netty.handler.codec.http.cors.CorsHandler;
 import net.openhft.affinity.AffinityStrategies;
 import net.openhft.affinity.AffinityThreadFactory;
 
@@ -69,6 +72,13 @@ public class HttpServer {
                             p.addLast(new HttpContentCompressor()); // Tự động chọn gzip/deflate
                             p.addLast(new HttpObjectAggregator(65536));     // TODO tìm cách tái sử dụng đối tượng này
                             p.addLast(httpRequestHandler);
+
+                            // Cấu hình CORS cho phép tất cả các nguồn
+                            CorsConfig corsConfig = CorsConfigBuilder.forAnyOrigin()
+                                    .allowedRequestHeaders("*")
+                                    .allowedRequestMethods(HttpMethod.GET, HttpMethod.POST, HttpMethod.OPTIONS, HttpMethod.PUT, HttpMethod.DELETE)
+                                    .build();
+                            p.addLast(new CorsHandler(corsConfig));
                         }
                     })
                     .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT) // Sử dụng PooledByteBufAllocator
