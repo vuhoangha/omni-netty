@@ -71,7 +71,6 @@ public class HttpServer {
                             p.addLast(new HttpServerCodec());
                             p.addLast(new HttpContentCompressor()); // Tự động chọn gzip/deflate
                             p.addLast(new HttpObjectAggregator(65536));     // TODO tìm cách tái sử dụng đối tượng này
-                            p.addLast(httpRequestHandler);
 
                             // Cấu hình CORS cho phép tất cả các nguồn
                             CorsConfig corsConfig = CorsConfigBuilder.forAnyOrigin()
@@ -79,6 +78,9 @@ public class HttpServer {
                                     .allowedRequestMethods(HttpMethod.GET, HttpMethod.POST, HttpMethod.OPTIONS, HttpMethod.PUT, HttpMethod.DELETE)
                                     .build();
                             p.addLast(new CorsHandler(corsConfig));
+
+                            // xử lý logic
+                            p.addLast(httpRequestHandler);
                         }
                     })
                     .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT) // Sử dụng PooledByteBufAllocator
